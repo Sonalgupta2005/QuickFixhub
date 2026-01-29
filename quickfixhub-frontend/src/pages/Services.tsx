@@ -1,7 +1,8 @@
 import React from 'react';
 import Layout from '@/components/layout/Layout';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import { useAuth } from '@/contexts/AuthContext';
 import { 
   Droplets, 
   Zap, 
@@ -67,6 +68,17 @@ const services = [
 ];
 
 const Services: React.FC = () => {
+  const { isAuthenticated } = useAuth();
+  const navigate = useNavigate();
+
+  const handleBookNow = (serviceId: string) => {
+    if (isAuthenticated) {
+      navigate(`/homeowner/new-request?service=${serviceId}`);
+    } else {
+      navigate(`/login?redirect=${encodeURIComponent(`/homeowner/new-request?service=${serviceId}`)}`);
+    }
+  };
+
   return (
     <Layout>
       {/* Hero */}
@@ -104,11 +116,9 @@ const Services: React.FC = () => {
                   <p className="text-muted-foreground text-lg mb-6 leading-relaxed">
                     {service.description}
                   </p>
-                  <Button variant="accent" asChild>
-                    <Link to={`/signup?service=${service.id}`}>
-                      Book Now
-                      <ArrowRight className="w-4 h-4 ml-2" />
-                    </Link>
+                  <Button variant="accent" onClick={() => handleBookNow(service.id)}>
+                    Book Now
+                    <ArrowRight className="w-4 h-4 ml-2" />
                   </Button>
                 </div>
 

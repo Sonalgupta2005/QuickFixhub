@@ -11,7 +11,7 @@ import { Wrench, Mail, Lock, Loader2 } from 'lucide-react';
 const Login: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const { login, isLoading } = useAuth();
+  const { login, isLoading,user } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -30,20 +30,21 @@ const Login: React.FC = () => {
     // TODO: Replace with actual Flask API call
     const success = await login(email, password);
     
-    if (success) {
+    if (success && user) {
       toast({
         title: 'Welcome back!',
         description: 'You have successfully logged in.',
       });
       
       // Redirect based on role (mock check - update when Flask is integrated)
-      if (email.includes('provider')) {
+      if (user.role === 'provider') {
         navigate('/provider/dashboard');
-      } else if (email.includes('admin')) {
+      } else if (user.role === 'admin') {
         navigate('/admin/dashboard');
       } else {
         navigate('/homeowner/dashboard');
       }
+
     } else {
       toast({
         title: 'Login Failed',

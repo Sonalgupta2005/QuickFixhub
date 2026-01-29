@@ -17,7 +17,8 @@ import {
   Star,
   DollarSign,
   Play,
-  Check
+  Check,
+  X
 } from 'lucide-react';
 
 const API_BASE_URL = 'http://localhost:5000/api/provider';
@@ -98,6 +99,21 @@ const ProviderDashboard: React.FC = () => {
     const myJobsRes = await fetch(`${API_BASE_URL}/jobs/my`, { credentials: 'include' });
     const myJobsData = await myJobsRes.json();
     setMyJobs(myJobsData.jobs);
+  };
+   const handleReject = async (requestId: string) => {
+    const res = await fetch(`${API_BASE_URL}/offers/${requestId}/reject`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      toast({ title: 'Failed to reject job', variant: 'destructive' });
+      return;
+    }
+
+    toast({ title: 'Job Rejected!' });
+
+    setAvailableRequests(prev => prev.filter(r => r.id !== requestId));
   };
 
   const handleStartJob = async (requestId: string) => {
@@ -211,9 +227,19 @@ const ProviderDashboard: React.FC = () => {
                       <span><User className="inline w-4 h-4" /> {request.userName}</span>
                     </div>
                   </div>
+                  <div className='flex gap-2'>
+                   <Button 
+                      variant="outline" 
+                      className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30"
+                      onClick={() => handleReject(request.id)}
+                    >
+                      <X className="w-4 h-4 mr-1" />
+                      Reject
+                    </Button>
                   <Button variant="accent" onClick={() => handleAcceptJob(request.id)}>
                     Accept Job
                   </Button>
+                  </div>
                 </div>
               </div>
             ))}

@@ -199,7 +199,7 @@ const NewRequest: React.FC = () => {
               </div>
 
               {/* Phone (read-only snapshot helper) */}
-              <div>
+              {/* <div>
                 <Label>Contact Phone</Label>
                 <div className="relative">
                   <Phone className="absolute left-3 top-3 w-5 h-5" />
@@ -210,7 +210,7 @@ const NewRequest: React.FC = () => {
                     className="pl-10 bg-muted"
                   />
                 </div>
-              </div>
+              </div> */}
 
               {/* Date & Time */}
               <div className="grid grid-cols-2 gap-4">

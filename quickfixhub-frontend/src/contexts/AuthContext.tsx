@@ -50,7 +50,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         body: JSON.stringify({ email, password }),
       });
       const data = await response.json();
-      console.log(data);
       if (data.success) {
         setAuthState({ user: data.user, isAuthenticated: true, isLoading: false });
         return true;

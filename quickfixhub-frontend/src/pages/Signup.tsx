@@ -46,7 +46,7 @@ const Signup: React.FC = () => {
     serviceTypes: [] as ServiceType[],
   });
 
-  const { signup, isLoading } = useAuth();
+  const { signup, isLoading} = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
