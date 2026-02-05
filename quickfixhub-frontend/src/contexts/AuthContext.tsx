@@ -11,7 +11,7 @@ interface AuthContextType extends AuthState {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 // TODO: Replace with actual Flask API endpoints
-const API_BASE_URL = 'http://localhost:5000/api'; // Flask backend URL
+const API_BASE_URL = '/api'; // Flask backend URL
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [authState, setAuthState] = useState<AuthState>({

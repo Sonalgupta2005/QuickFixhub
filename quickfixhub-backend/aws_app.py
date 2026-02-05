@@ -1,7 +1,6 @@
 # aws_app.py
 
-from flask import Flask
-from flask_cors import CORS
+from flask import Flask, send_from_directory
 import os
 import boto3
 
@@ -11,21 +10,17 @@ from routes.auth import auth_bp
 from routes.service_request import service_bp
 from routes.provider import provider_bp
 from models.user import User
+from db.dynamodb import users_table
 
 # ----------------------------------
-# Flask App
+# Flask App (Serve React build)
 # ----------------------------------
-app = Flask(__name__)
-app.config.from_object(Config)
-
-# ----------------------------------
-# CORS (Frontend domain)
-# ----------------------------------
-CORS(
-    app,
-    supports_credentials=True,
-    origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+app = Flask(
+    __name__,
+    static_folder="frontend_dist",
+    static_url_path=""
 )
+app.config.from_object(Config)
 
 # ----------------------------------
 # Extensions
@@ -39,17 +34,7 @@ login_manager.init_app(app)
 AWS_REGION = "us-east-1"
 SNS_TOPIC_ARN = os.getenv("SNS_TOPIC_ARN")
 
-dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 sns = boto3.client("sns", region_name=AWS_REGION)
-
-# ----------------------------------
-# DynamoDB Tables
-# (MUST already exist in AWS)
-# ----------------------------------
-users_table = dynamodb.Table("Users")
-providers_table = dynamodb.Table("Providers")
-service_requests_table = dynamodb.Table("ServiceRequests")
-service_offers_table = dynamodb.Table("ServiceOffers")
 
 # ----------------------------------
 # SNS helper
@@ -76,17 +61,17 @@ def load_user(user_id):
     return User(**item) if item else None
 
 # ----------------------------------
-# Blueprints
+# API Blueprints
 # ----------------------------------
 app.register_blueprint(auth_bp, url_prefix="/api/auth")
 app.register_blueprint(service_bp, url_prefix="/api/service")
 app.register_blueprint(provider_bp, url_prefix="/api/provider")
 
 # ----------------------------------
-# Health check
+# API Health Check (moved)
 # ----------------------------------
-@app.route("/")
-def health():
+@app.route("/api/health")
+def api_health():
     return {
         "status": "running",
         "env": "aws",
@@ -94,7 +79,22 @@ def health():
     }
 
 # ----------------------------------
+# Serve React (SPA)
+# ----------------------------------
+@app.route("/")
+def serve_react():
+    return send_from_directory(app.static_folder, "index.html")
+
+@app.route("/<path:path>")
+def serve_static_or_react(path):
+    file_path = os.path.join(app.static_folder, path)
+    if os.path.exists(file_path):
+        return send_from_directory(app.static_folder, path)
+    # React Router fallback
+    return send_from_directory(app.static_folder, "index.html")
+
+# ----------------------------------
 # Entry point (DEMO MODE)
 # ----------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
