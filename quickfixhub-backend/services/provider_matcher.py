@@ -1,21 +1,20 @@
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr
 from db.dynamodb import provider_profiles_table, service_requests_table
 
 MAX_ACTIVE_JOBS = 3
 
 
 # -------------------------------------------------
-# COUNT ACTIVE JOBS (DynamoDB)
+# COUNT ACTIVE JOBS (NO GSI → FULL SCAN)
 # -------------------------------------------------
 def count_active_jobs(provider_id):
     """
-    Counts accepted + in_progress jobs for a provider
+    Counts accepted + in_progress jobs for a provider.
+    Uses scan because no GSI exists.
     """
 
-    # ⚠️ Requires GSI: assigned_provider_id-index
-    res = service_requests_table.query(
-        IndexName="assigned_provider_id-index",
-        KeyConditionExpression=Key("assigned_provider_id").eq(provider_id)
+    res = service_requests_table.scan(
+        FilterExpression=Attr("assigned_provider_id").eq(provider_id)
     )
 
     count = 0
@@ -44,6 +43,7 @@ def get_eligible_providers(service_type, address):
 
         provider_id = profile["provider_id"]
 
+        # Optional verification check
         # if not profile.get("is_verified", False):
         #     continue
 

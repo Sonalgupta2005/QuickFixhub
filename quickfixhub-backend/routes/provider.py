@@ -1,21 +1,15 @@
 from flask import Blueprint, jsonify
 from flask_login import login_required, current_user
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr
+import uuid
 
 from db.dynamodb import (
     service_requests_table,
     service_offers_table,
-    providers_table,
-)
-
-from services.offer_service import (
-    get_active_offer,
-    expire_other_offers,
-    offer_request_to_providers,
-    MAX_OFFER_ROUNDS,
 )
 
 from services.provider_matcher import get_ranked_providers
+from services.offer_service import MAX_OFFER_ROUNDS
 from utils.time_utils import now_iso
 
 
@@ -23,7 +17,7 @@ provider_bp = Blueprint("provider", __name__)
 
 
 # =========================================================
-# PROVIDER DASHBOARD SUMMARY
+# DASHBOARD SUMMARY
 # =========================================================
 @provider_bp.route("/dashboard/summary", methods=["GET"])
 @login_required
@@ -32,7 +26,7 @@ def dashboard_summary():
         return {"success": False}, 403
 
     res = service_requests_table.scan(
-        FilterExpression=Key("assigned_provider_id").eq(current_user.id)
+        FilterExpression=Attr("assigned_provider_id").eq(current_user.id)
     )
 
     completed = 0
@@ -42,7 +36,7 @@ def dashboard_summary():
     for req in res.get("Items", []):
         if req["status"] == "completed":
             completed += 1
-            earnings += 50  # demo payout
+            earnings += 50
         elif req["status"] in ["accepted", "in_progress"]:
             active += 1
 
@@ -58,7 +52,7 @@ def dashboard_summary():
 
 
 # =========================================================
-# AVAILABLE JOBS (OFFERS TO THIS PROVIDER)
+# AVAILABLE JOBS
 # =========================================================
 @provider_bp.route("/jobs/available", methods=["GET"])
 @login_required
@@ -66,17 +60,16 @@ def available_jobs():
     if current_user.role != "provider":
         return {"success": False}, 403
 
-    offers = service_offers_table.query(
-        IndexName="provider_id-index",
-        KeyConditionExpression=Key("provider_id").eq(current_user.id),
+    offers = service_offers_table.scan(
+        FilterExpression=(
+            Attr("provider_id").eq(current_user.id)
+            & Attr("status").eq("offered")
+        )
     ).get("Items", [])
 
     jobs = []
 
     for offer in offers:
-        if offer["status"] != "offered":
-            continue
-
         req = service_requests_table.get_item(
             Key={"request_id": offer["request_id"]}
         ).get("Item")
@@ -88,7 +81,7 @@ def available_jobs():
 
 
 # =========================================================
-# MY JOBS (ACCEPTED / IN PROGRESS / COMPLETED)
+# MY JOBS
 # =========================================================
 @provider_bp.route("/jobs/my", methods=["GET"])
 @login_required
@@ -97,15 +90,15 @@ def my_jobs():
         return {"success": False}, 403
 
     res = service_requests_table.scan(
-        FilterExpression=Key("assigned_provider_id").eq(current_user.id)
+        FilterExpression=(
+            Attr("assigned_provider_id").eq(current_user.id)
+            & Attr("status").is_in(
+                ["accepted", "in_progress", "completed"]
+            )
+        )
     )
 
-    jobs = [
-        r for r in res.get("Items", [])
-        if r["status"] in ["accepted", "in_progress", "completed"]
-    ]
-
-    return {"success": True, "jobs": jobs}
+    return {"success": True, "jobs": res.get("Items", [])}
 
 
 # =========================================================
@@ -117,13 +110,25 @@ def accept_offer(request_id):
     if current_user.role != "provider":
         return {"success": False}, 403
 
-    offer = get_active_offer(request_id, current_user.id)
-    if not offer:
+    # Fetch offer using composite key
+    res = service_offers_table.get_item(
+        Key={
+            "request_id": request_id,
+            "provider_id": current_user.id
+        }
+    )
+
+    offer = res.get("Item")
+
+    if not offer or offer["status"] != "offered":
         return {"success": False, "message": "No active offer"}, 400
 
     # Mark offer accepted
     service_offers_table.update_item(
-        Key={"offer_id": offer.offer_id},
+        Key={
+            "request_id": request_id,
+            "provider_id": current_user.id
+        },
         UpdateExpression="SET #s=:s",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":s": "accepted"},
@@ -138,7 +143,7 @@ def accept_offer(request_id):
                 provider_name=:pn,
                 provider_phone=:pp,
                 provider_email=:pe,
-                offer_expires_at=:n,
+                offer_expires_at=:null,
                 updated_at=:u
         """,
         ExpressionAttributeNames={"#s": "status"},
@@ -148,13 +153,27 @@ def accept_offer(request_id):
             ":pn": current_user.name,
             ":pp": current_user.phone,
             ":pe": current_user.email,
-            ":n": None,
+            ":null": None,
             ":u": now_iso(),
         },
     )
 
-    # Expire all other offers
-    expire_other_offers(request_id, current_user.id)
+    # Expire other offers for same request
+    other_offers = service_offers_table.scan(
+        FilterExpression=Attr("request_id").eq(request_id)
+    ).get("Items", [])
+
+    for o in other_offers:
+        if o["provider_id"] != current_user.id and o["status"] == "offered":
+            service_offers_table.update_item(
+                Key={
+                    "request_id": request_id,
+                    "provider_id": o["provider_id"]
+                },
+                UpdateExpression="SET #s=:s",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":s": "expired"},
+            )
 
     return {"success": True}
 
@@ -168,27 +187,28 @@ def reject_offer(request_id):
     if current_user.role != "provider":
         return {"success": False}, 403
 
-    offer = get_active_offer(request_id, current_user.id)
-    if not offer:
-        return {"success": False, "message": "No active offer"}, 400
+    res = service_offers_table.get_item(
+        Key={
+            "request_id": request_id,
+            "provider_id": current_user.id
+        }
+    )
 
-    # Mark offer rejected
+    offer = res.get("Item")
+
+    if not offer or offer["status"] != "offered":
+        return {"success": False}, 400
+
+    # Mark rejected
     service_offers_table.update_item(
-        Key={"offer_id": offer.offer_id},
+        Key={
+            "request_id": request_id,
+            "provider_id": current_user.id
+        },
         UpdateExpression="SET #s=:s",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":s": "rejected"},
     )
-
-    # Fetch all offers for this request
-    offers = service_offers_table.query(
-        IndexName="request_id-index",
-        KeyConditionExpression=Key("request_id").eq(request_id),
-    ).get("Items", [])
-
-    # If other providers are still deciding, stop here
-    if any(o["status"] == "offered" for o in offers):
-        return {"success": True, "message": "Offer rejected"}
 
     req = service_requests_table.get_item(
         Key={"request_id": request_id}
@@ -197,84 +217,83 @@ def reject_offer(request_id):
     if not req:
         return {"success": False}, 404
 
-    # Max rounds reached → expire
+    # Check if other offers still active
+    active_offers = service_offers_table.scan(
+        FilterExpression=(
+            Attr("request_id").eq(request_id)
+            & Attr("status").eq("offered")
+        )
+    ).get("Items", [])
+
+    if active_offers:
+        return {"success": True}
+
+    # Max rounds?
     if req["offer_round"] >= MAX_OFFER_ROUNDS:
         service_requests_table.update_item(
             Key={"request_id": request_id},
             UpdateExpression="SET #s=:s, updated_at=:u",
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":s": "expired", ":u": now_iso()},
+            ExpressionAttributeValues={
+                ":s": "expired",
+                ":u": now_iso(),
+            },
         )
-        return {"success": True, "message": "Request expired"}
+        return {"success": True}
 
-    # Exclude already-contacted providers
-    contacted = {o["provider_id"] for o in offers}
-
+    # Re-offer logic
     ranked = get_ranked_providers(
         req["service_type"],
         req["address"],
     )
 
-    fresh_providers = [
-        pid for pid, _ in ranked if pid not in contacted
-    ]
+    contacted = {
+        o["provider_id"]
+        for o in service_offers_table.scan(
+            FilterExpression=Attr("request_id").eq(request_id)
+        ).get("Items", [])
+    }
 
-    # No providers left → expire
-    if not fresh_providers:
+    fresh = [pid for pid, _ in ranked if pid not in contacted]
+
+    if not fresh:
         service_requests_table.update_item(
             Key={"request_id": request_id},
             UpdateExpression="SET #s=:s, updated_at=:u",
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":s": "expired", ":u": now_iso()},
+            ExpressionAttributeValues={
+                ":s": "expired",
+                ":u": now_iso(),
+            },
         )
-        return {"success": True, "message": "Request expired"}
+        return {"success": True}
 
     # Offer next batch
-    offer_request_to_providers(req, fresh_providers[:3])
+    for pid in fresh[:3]:
+        service_offers_table.put_item(
+            Item={
+                "request_id": request_id,
+                "provider_id": pid,
+                "status": "offered",
+                "created_at": now_iso(),
+            }
+        )
 
-    return {
-        "success": True,
-        "message": "Offer rejected, re-offered to next providers",
-    }
-
-
-# =========================================================
-# START JOB
-# =========================================================
-@provider_bp.route("/jobs/<request_id>/start", methods=["POST"])
-@login_required
-def start_job(request_id):
     service_requests_table.update_item(
         Key={"request_id": request_id},
-        UpdateExpression="SET #s=:s, updated_at=:u",
-        ConditionExpression="assigned_provider_id=:pid AND #s=:prev",
+        UpdateExpression="""
+            SET #s=:s,
+                offer_round=:r,
+                offer_expires_at=:e,
+                updated_at=:u
+        """,
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={
-            ":s": "in_progress",
-            ":prev": "accepted",
-            ":pid": current_user.id,
+            ":s": "offered",
+            ":r": req["offer_round"] + 1,
+            ":e": now_iso(),
             ":u": now_iso(),
         },
     )
-    return {"success": True}
 
-
-# =========================================================
-# COMPLETE JOB
-# =========================================================
-@provider_bp.route("/jobs/<request_id>/complete", methods=["POST"])
-@login_required
-def complete_job(request_id):
-    service_requests_table.update_item(
-        Key={"request_id": request_id},
-        UpdateExpression="SET #s=:s, updated_at=:u",
-        ConditionExpression="assigned_provider_id=:pid AND #s=:prev",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":s": "completed",
-            ":prev": "in_progress",
-            ":pid": current_user.id,
-            ":u": now_iso(),
-        },
-    )
     return {"success": True}

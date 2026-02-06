@@ -32,7 +32,7 @@ login_manager.init_app(app)
 # AWS Configuration (IAM-based)
 # ----------------------------------
 AWS_REGION = "us-east-1"
-SNS_TOPIC_ARN = os.getenv("SNS_TOPIC_ARN")
+SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:905418361023:aws_capstone_topic"
 
 sns = boto3.client("sns", region_name=AWS_REGION)
 

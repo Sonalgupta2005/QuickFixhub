@@ -2,22 +2,20 @@ from flask import Blueprint, request, jsonify, session
 from flask_login import login_user, logout_user, login_required, current_user
 from extensions import bcrypt
 from models.user import User
-from models.provider_profile import ProviderProfile
 from datetime import datetime
 import uuid
 from utils.time_utils import now_iso
 from aws_app import send_sns
 
-
 from db.dynamodb import users_table, provider_profiles_table
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr
 
 auth_bp = Blueprint("auth", __name__)
 
 
-# ===============================
-# SIGNUP (ROLE-AWARE, DYNAMODB)
-# ===============================
+# ==========================================================
+# SIGNUP (NO GSI — SCAN FOR EMAIL)
+# ==========================================================
 @auth_bp.route("/signup", methods=["POST"])
 def signup():
     data = request.get_json()
@@ -35,11 +33,10 @@ def signup():
         return {"success": False, "message": "Invalid role"}, 400
 
     # ----------------------------------
-    # CHECK EMAIL UNIQUENESS (GSI)
+    # CHECK EMAIL UNIQUENESS (SCAN)
     # ----------------------------------
-    existing = users_table.query(
-        IndexName="email-index",
-        KeyConditionExpression=Key("email").eq(email)
+    existing = users_table.scan(
+        FilterExpression=Attr("email").eq(email)
     )
 
     if existing.get("Items"):
@@ -52,7 +49,7 @@ def signup():
     # CREATE USER
     # ----------------------------------
     user_item = {
-        "user_id": user_id,
+        "user_id": user_id,  # PARTITION KEY
         "name": name,
         "email": email,
         "password_hash": bcrypt.generate_password_hash(password).decode(),
@@ -80,7 +77,7 @@ def signup():
             }, 400
 
         provider_profile = {
-            "provider_id": user_id,
+            "provider_id": user_id,  # PK of provider_profiles table
             "service_types": service_types,
             "address": address,
             "is_verified": False,
@@ -103,6 +100,7 @@ def signup():
 
     login_user(user)
     session["role"] = role
+    session["user_id"] = user_id
 
     response = {
         "success": True,
@@ -115,12 +113,13 @@ def signup():
     return jsonify(response), 201
 
 
-# ===============================
-# LOGIN
-# ===============================
+# ==========================================================
+# LOGIN (SCAN VERSION — NO GSI)
+# ==========================================================
 @auth_bp.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
+
     email = data.get("email")
     password = data.get("password")
 
@@ -131,11 +130,10 @@ def login():
         }, 400
 
     # ----------------------------------
-    # QUERY USER BY EMAIL (GSI)
+    # SCAN FOR EMAIL
     # ----------------------------------
-    res = users_table.query(
-        IndexName="email-index",
-        KeyConditionExpression=Key("email").eq(email)
+    res = users_table.scan(
+        FilterExpression=Attr("email").eq(email)
     )
 
     items = res.get("Items", [])
@@ -169,12 +167,12 @@ def login():
     session["user_id"] = user.id
 
     # ----------------------------------
-    # 🔔 SNS LOGIN NOTIFICATION
+    # SNS LOGIN NOTIFICATION
     # ----------------------------------
     send_sns(
         subject="User Login Event",
         message=(
-            f"User logged in successfully\n\n"
+            f"User logged in\n\n"
             f"User ID: {user.id}\n"
             f"Name: {user.name}\n"
             f"Email: {user.email}\n"
@@ -199,56 +197,10 @@ def login():
 
     return jsonify(response), 200
 
-def login():
-    data = request.get_json()
-    email = data.get("email")
-    password = data.get("password")
 
-    res = users_table.query(
-        IndexName="email-index",
-        KeyConditionExpression=Key("email").eq(email)
-    )
-
-    items = res.get("Items", [])
-    if not items:
-        return {"success": False, "message": "Invalid credentials"}, 401
-
-    user_item = items[0]
-
-    if not bcrypt.check_password_hash(
-        user_item["password_hash"], password
-    ):
-        return {"success": False, "message": "Invalid credentials"}, 401
-
-    user = User(
-        id=user_item["user_id"],
-        name=user_item["name"],
-        email=user_item["email"],
-        role=user_item["role"],
-        phone=user_item["phone"],
-        created_at=user_item["created_at"]
-    )
-
-    login_user(user)
-    session["role"] = user.role
-
-    response = {
-        "success": True,
-        "user": user.to_dict()
-    }
-
-    if user.role == "provider":
-        profile = provider_profiles_table.get_item(
-            Key={"provider_id": user.id}
-        ).get("Item")
-        response["providerProfile"] = profile
-
-    return jsonify(response)
-
-
-# ===============================
+# ==========================================================
 # SESSION RESTORE
-# ===============================
+# ==========================================================
 @auth_bp.route("/me", methods=["GET"])
 @login_required
 def me():
@@ -266,9 +218,9 @@ def me():
     return jsonify(response)
 
 
-# ===============================
+# ==========================================================
 # LOGOUT
-# ===============================
+# ==========================================================
 @auth_bp.route("/logout", methods=["POST"])
 @login_required
 def logout():

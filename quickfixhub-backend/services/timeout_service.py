@@ -1,3 +1,4 @@
+from boto3.dynamodb.conditions import Key
 from db.dynamodb import service_requests_table, service_offers_table
 from utils.time_utils import now_iso
 from services.offer_service import offer_request_to_providers, MAX_OFFER_ROUNDS
@@ -5,6 +6,7 @@ from services.provider_matcher import get_ranked_providers
 
 
 def handle_expired_offers():
+
     res = service_requests_table.scan()
 
     for request in res.get("Items", []):
@@ -20,12 +22,11 @@ def handle_expired_offers():
 
         request_id = request["request_id"]
 
-        # ------------------------------------
-        # Expire all open offers
-        # ------------------------------------
+        # -------------------------------------------------
+        # 1️⃣ Expire all open offers
+        # -------------------------------------------------
         offers = service_offers_table.query(
-            KeyConditionExpression="request_id = :rid",
-            ExpressionAttributeValues={":rid": request_id}
+            KeyConditionExpression=Key("request_id").eq(request_id)
         ).get("Items", [])
 
         for offer in offers:
@@ -40,9 +41,9 @@ def handle_expired_offers():
                     ExpressionAttributeValues={":expired": "expired"}
                 )
 
-        # ------------------------------------
-        # Stop if max rounds reached
-        # ------------------------------------
+        # -------------------------------------------------
+        # 2️⃣ Max rounds check
+        # -------------------------------------------------
         if request["offer_round"] >= MAX_OFFER_ROUNDS:
             service_requests_table.update_item(
                 Key={"request_id": request_id},
@@ -55,9 +56,9 @@ def handle_expired_offers():
             )
             continue
 
-        # ------------------------------------
-        # Previously contacted providers
-        # ------------------------------------
+        # -------------------------------------------------
+        # 3️⃣ Exclude previously contacted providers
+        # -------------------------------------------------
         previously_contacted = {
             o["provider_id"] for o in offers
         }
@@ -72,6 +73,9 @@ def handle_expired_offers():
             if pid not in previously_contacted
         ]
 
+        # -------------------------------------------------
+        # 4️⃣ No providers left → expire
+        # -------------------------------------------------
         if not fresh_providers:
             service_requests_table.update_item(
                 Key={"request_id": request_id},
@@ -84,9 +88,9 @@ def handle_expired_offers():
             )
             continue
 
-        # ------------------------------------
-        # Re-offer
-        # ------------------------------------
+        # -------------------------------------------------
+        # 5️⃣ Re-offer next batch
+        # -------------------------------------------------
         offer_request_to_providers(
             request,
             fresh_providers[:3]
